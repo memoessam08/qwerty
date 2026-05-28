@@ -1,0 +1,6 @@
+{
+  "name": "الاستاذ حسين حسن - التاريخ",
+  "description": "منصة الأستاذ حسين حسن التعليمية في مادة التاريخ لطلاب الثانوية العامة - تصفح الحصص والامتحانات والمتابعة الصفية",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

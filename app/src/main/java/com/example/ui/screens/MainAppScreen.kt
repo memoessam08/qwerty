@@ -310,65 +310,65 @@ fun MainAppScreen() {
                         }
                     }
                 }
-
-                // Show Interactive Lesson Video Player Dialog sheet
-                if (lessonToWatch != null) {
-                    WatchVideoDialog(
-                        lesson = lessonToWatch!!,
-                        onDismiss = { lessonToWatch = null },
-                        onMarkCompleted = {
-                            viewModel.toggleLessonCompleted(lessonToWatch!!)
-                            lessonToWatch = lessonToWatch!!.copy(isCompleted = !lessonToWatch!!.isCompleted)
-                        },
-                        onUpdateWatchTime = { seconds ->
-                            viewModel.updateLessonWatchTime(lessonToWatch!!, seconds)
-                            lessonToWatch = lessonToWatch!!.copy(watchTimeSeconds = lessonToWatch!!.watchTimeSeconds + seconds)
-                        },
-                        onUnlockWithCode = { enteredCode, onCompleted ->
-                            viewModel.unlockLesson(lessonToWatch!!, enteredCode) { success ->
-                                if (success) {
-                                    lessonToWatch = lessonToWatch!!.copy(isUnlocked = true)
-                                }
-                                onCompleted(success)
-                            }
-                        }
-                    )
-                }
-
-                // Show Student Profile Customizer Dialog sheet
-                if (showProfileDialog) {
-                    UserProfileDialog(
-                        currentName = studentName,
-                        currentGrade = selectedGrade,
-                        currentCode = studentCode,
-                        onDismiss = { showProfileDialog = false },
-                        onSave = { name, grade, code ->
-                            viewModel.updateStudentProfile(name, grade, code)
-                            showProfileDialog = false
-                            Toast.makeText(context, "تم تعديل ملفك الشخصي بنجاح!", Toast.LENGTH_SHORT).show()
-                        }
-                    )
-                }
-
-                // Show Exam Report certificate overlay once submitted
-                if (examSubmissionResult != null) {
-                    QuizReportCertificate(
-                        result = examSubmissionResult!!,
-                        onDismiss = { examSubmissionResult = null }
-                    )
-                }
-
-                if (showTeacherPasswordDialog) {
-                    TeacherPasswordDialog(
-                        onDismiss = { showTeacherPasswordDialog = false },
-                        onSuccess = {
-                            showTeacherPasswordDialog = false
-                            viewModel.setRole(AcademyViewModel.Role.TEACHER)
-                            Toast.makeText(context, "العرض بصفة: معلم متحكم", Toast.LENGTH_SHORT).show()
-                        }
-                    )
-                }
             }
+        }
+
+        // Show Interactive Lesson Video Player Dialog sheet
+        if (lessonToWatch != null) {
+            WatchVideoDialog(
+                lesson = lessonToWatch!!,
+                onDismiss = { lessonToWatch = null },
+                onMarkCompleted = {
+                    viewModel.toggleLessonCompleted(lessonToWatch!!)
+                    lessonToWatch = lessonToWatch!!.copy(isCompleted = !lessonToWatch!!.isCompleted)
+                },
+                onUpdateWatchTime = { seconds ->
+                    viewModel.updateLessonWatchTime(lessonToWatch!!, seconds)
+                    lessonToWatch = lessonToWatch!!.copy(watchTimeSeconds = lessonToWatch!!.watchTimeSeconds + seconds)
+                },
+                onUnlockWithCode = { enteredCode, onCompleted ->
+                    viewModel.unlockLesson(lessonToWatch!!, enteredCode) { success ->
+                        if (success) {
+                            lessonToWatch = lessonToWatch!!.copy(isUnlocked = true)
+                        }
+                        onCompleted(success)
+                    }
+                }
+            )
+        }
+
+        // Show Student Profile Customizer Dialog sheet
+        if (showProfileDialog) {
+            UserProfileDialog(
+                currentName = studentName,
+                currentGrade = selectedGrade,
+                currentCode = studentCode,
+                onDismiss = { showProfileDialog = false },
+                onSave = { name, grade, code ->
+                    viewModel.updateStudentProfile(name, grade, code)
+                    showProfileDialog = false
+                    Toast.makeText(context, "تم تعديل ملفك الشخصي بنجاح!", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
+
+        // Show Exam Report certificate overlay once submitted
+        if (examSubmissionResult != null) {
+            QuizReportCertificate(
+                result = examSubmissionResult!!,
+                onDismiss = { examSubmissionResult = null }
+            )
+        }
+
+        if (showTeacherPasswordDialog) {
+            TeacherPasswordDialog(
+                onDismiss = { showTeacherPasswordDialog = false },
+                onSuccess = {
+                    showTeacherPasswordDialog = false
+                    viewModel.setRole(AcademyViewModel.Role.TEACHER)
+                    Toast.makeText(context, "العرض بصفة: معلم متحكم", Toast.LENGTH_SHORT).show()
+                }
+            )
         }
     }
 }
@@ -3737,11 +3737,26 @@ fun WatchVideoDialog(
         }
     }
 
-    Dialog(onDismissRequest = handleDismiss) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.56f))
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = handleDismiss
+            ),
+        contentAlignment = Alignment.Center
+    ) {
         Card(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(10.dp),
+                .fillMaxWidth(0.92f)
+                .wrapContentHeight()
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                    onClick = {} // block click propagation
+                ),
             shape = RoundedCornerShape(24.dp)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
@@ -3852,43 +3867,69 @@ fun WatchVideoDialog(
                             .background(Color.Black),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (lesson.isGoogleDrive) {
-                            // Embed Google Drive Video in Webview
-                            val driveUrl = if (lesson.videoId.startsWith("http")) {
+                        var webViewError by remember { mutableStateOf(false) }
+
+                        val videoUrl = if (lesson.isGoogleDrive) {
+                            if (lesson.videoId.startsWith("http")) {
                                 if (lesson.videoId.contains("/preview") || lesson.videoId.contains("/view")) {
                                     lesson.videoId
                                 } else {
-                                    // if it's drive share link form, try to build preview link
                                     lesson.videoId.replace("/view?usp=drivesdk", "/preview").replace("/view", "/preview")
                                 }
                             } else {
                                 "https://drive.google.com/file/d/${lesson.videoId}/preview"
                             }
-                            android.webkit.WebView(LocalContext.current).apply {
-                                settings.javaScriptEnabled = true
-                                settings.allowContentAccess = true
-                                settings.domStorageEnabled = true
-                                webViewClient = android.webkit.WebViewClient()
-                                loadUrl(driveUrl)
-                            }.let { view ->
-                                androidx.compose.ui.viewinterop.AndroidView(
-                                    factory = { view },
-                                    modifier = Modifier.fillMaxSize()
+                        } else {
+                            if (lesson.videoId.startsWith("http")) lesson.videoId else "https://www.youtube.com/embed/${lesson.videoId}"
+                        }
+
+                        if (webViewError) {
+                            Column(
+                                modifier = Modifier.fillMaxSize().padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = "مشغل الفيديو مدمج غير مدعوم على هذه المحاكاة.",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    textAlign = TextAlign.Center
                                 )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Button(
+                                    onClick = {
+                                        try {
+                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(videoUrl))
+                                            context.startActivity(intent)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "فشل فتح الرابط!", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = AmberGold)
+                                ) {
+                                    Text("فتح المحاضرة في المتصفح الخارجي ↗️", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                }
                             }
                         } else {
-                            // YouTube iframe web view
-                            val link = if (lesson.videoId.startsWith("http")) lesson.videoId else "https://www.youtube.com/embed/${lesson.videoId}"
-                            android.webkit.WebView(LocalContext.current).apply {
-                                settings.javaScriptEnabled = true
-                                webViewClient = android.webkit.WebViewClient()
-                                loadUrl(link)
-                            }.let { view ->
-                                androidx.compose.ui.viewinterop.AndroidView(
-                                    factory = { view },
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
+                            androidx.compose.ui.viewinterop.AndroidView(
+                                factory = { ctx ->
+                                    try {
+                                        android.webkit.WebView(ctx).apply {
+                                            settings.javaScriptEnabled = true
+                                            if (lesson.isGoogleDrive) {
+                                                settings.allowContentAccess = true
+                                                settings.domStorageEnabled = true
+                                            }
+                                            webViewClient = android.webkit.WebViewClient()
+                                            loadUrl(videoUrl)
+                                        }
+                                    } catch (e: Throwable) {
+                                        webViewError = true
+                                        android.view.View(ctx)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
                         }
                     }
 
@@ -4134,15 +4175,13 @@ fun LoginAndRegisterView(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .background(
-                brush = okhttp3.internal.concurrent.TaskRunner.logger.let {
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primary,
-                            MaterialTheme.colorScheme.secondary,
-                            MaterialTheme.colorScheme.background
-                        )
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        MaterialTheme.colorScheme.primary,
+                        MaterialTheme.colorScheme.secondary,
+                        MaterialTheme.colorScheme.background
                     )
-                }
+                )
             )
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

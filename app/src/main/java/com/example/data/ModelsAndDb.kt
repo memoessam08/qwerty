@@ -55,9 +55,28 @@ data class Lesson(
     val isCompleted: Boolean = false,// حالة الانتهاء للطالب
     val datePublished: Long = System.currentTimeMillis(),
     val activationCode: String = "", // كود التفعيل المطلوب لفتح الحصة
-    val isUnlocked: Boolean = false, // هل فُتحت الحصة من قبل الطالب بإدخال الكود؟
+    val isUnlocked: Boolean = false, // هل فُتحت الحصة من قبل الطالب بإدخال الكود?
     val watchTimeSeconds: Int = 0,   // الزمن بالثواني الذي قضاه الطالب فعلياً داخل الدرس
-    val isLocalVideo: Boolean = false // هل تم تحميل الفيديو محلياً من المعرض بالجهاز؟
+    val isGoogleDrive: Boolean = false // هل الفيديو من جوجل درايف?
+)
+
+// 3.1 StudentProfile Entity (ملفات الطلاب)
+@Entity(tableName = "students")
+data class StudentProfile(
+    @PrimaryKey val id: String, // الكود الشخصي للطالب (مثلا STU-XXXXX)
+    val name: String,
+    val gradeLevel: String,
+    val joinedAt: Long = System.currentTimeMillis()
+)
+
+// 3.2 ActivationCode Entity (أكواد تفعيل الحصص المنتجة)
+@Entity(tableName = "activation_codes")
+data class ActivationCode(
+    @PrimaryKey val code: String, // كود التفعيل المولد
+    val lessonId: Int? = null,    // معرف الدرس المرتبط به (إن وجد)
+    val createdAt: Long = System.currentTimeMillis(),
+    val isUsed: Boolean = false,
+    val usedBy: String = ""       // اسم أو كود الطالب الذي استخدمه
 )
 
 // 4. Exam Entity (الامتحانات والاختبارات)
@@ -140,12 +159,35 @@ interface AcademyDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSubmission(submission: QuizSubmission)
+
+    // Students / Profiles
+    @Query("SELECT * FROM students")
+    suspend fun getStudentsOnce(): List<StudentProfile>
+
+    @Query("SELECT * FROM students ORDER BY name ASC")
+    fun getAllStudents(): Flow<List<StudentProfile>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertStudent(profile: StudentProfile)
+
+    @Query("DELETE FROM students WHERE id = :studentId")
+    suspend fun deleteStudent(studentId: String)
+
+    // Activation Codes
+    @Query("SELECT * FROM activation_codes")
+    suspend fun getActivationCodesOnce(): List<ActivationCode>
+
+    @Query("SELECT * FROM activation_codes ORDER BY createdAt DESC")
+    fun getAllActivationCodes(): Flow<List<ActivationCode>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertActivationCode(code: ActivationCode)
 }
 
 // 7. Database wrapper
 @Database(
-    entities = [Lesson::class, Exam::class, QuizSubmission::class],
-    version = 2,
+    entities = [Lesson::class, Exam::class, QuizSubmission::class, StudentProfile::class, ActivationCode::class],
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(QuestionListConverter::class)

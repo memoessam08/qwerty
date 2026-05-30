@@ -1,6 +1,7 @@
 package com.example
 
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -13,6 +14,10 @@ import com.example.ui.theme.MyApplicationTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Allow displaying videos on external screens, projectors, and casting devices
+        // (Removed WindowManager.LayoutParams.FLAG_SECURE)
+        
         // Enable true immersive edge-to-edge
         enableEdgeToEdge()
         setContent {

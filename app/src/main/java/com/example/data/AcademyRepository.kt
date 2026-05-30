@@ -52,4 +52,30 @@ class AcademyRepository(private val academyDao: AcademyDao) {
     suspend fun insertSubmission(submission: QuizSubmission) {
         academyDao.insertSubmission(submission)
     }
+
+    // Students / Profiles
+    val allStudents: Flow<List<StudentProfile>> = academyDao.getAllStudents()
+
+    suspend fun insertStudent(profile: StudentProfile) {
+        academyDao.insertStudent(profile)
+    }
+
+    suspend fun deleteStudent(studentId: String) {
+        academyDao.deleteStudent(studentId)
+    }
+
+    suspend fun getStudentsOnce(): List<StudentProfile> {
+        return academyDao.getStudentsOnce()
+    }
+
+    // Activation Codes
+    val allActivationCodes: Flow<List<ActivationCode>> = academyDao.getAllActivationCodes()
+
+    suspend fun insertActivationCode(code: ActivationCode) {
+        academyDao.insertActivationCode(code)
+    }
+
+    suspend fun getActivationCodesOnce(): List<ActivationCode> {
+        return academyDao.getActivationCodesOnce()
+    }
 }

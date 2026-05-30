@@ -17,6 +17,8 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
     val allLessons = repository.allLessons
     val allExams = repository.allExams
     val allSubmissions = repository.allSubmissions
+    val allStudentsFlow = repository.allStudents
+    val allActivationCodesFlow = repository.allActivationCodes
 
     private val _currentRole = MutableStateFlow(Role.STUDENT)
     val currentRole: StateFlow<Role> = _currentRole.asStateFlow()
@@ -25,10 +27,13 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
     private val _syncStatus = MutableStateFlow(SyncStatus.IDLE)
     val syncStatus: StateFlow<SyncStatus> = _syncStatus.asStateFlow()
 
-    private val _studentName = MutableStateFlow("طالب زائر")
+    private val _isLoggedIn = MutableStateFlow(false)
+    val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
+
+    private val _studentName = MutableStateFlow("")
     val studentName: StateFlow<String> = _studentName.asStateFlow()
 
-    private val _studentCode = MutableStateFlow("STU-1234")
+    private val _studentCode = MutableStateFlow("")
     val studentCode: StateFlow<String> = _studentCode.asStateFlow()
 
     private val _selectedGrade = MutableStateFlow("الصف الثالث الثانوي")
@@ -50,28 +55,118 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
     init {
         // Load configurations
         val prefs = application.getSharedPreferences("academy_prefs", android.content.Context.MODE_PRIVATE)
-        _studentName.value = prefs.getString("student_name", "أحمد عصام") ?: "أحمد عصام"
-        _selectedGrade.value = prefs.getString("selected_grade", "الصف الثالث الثانوي") ?: "الصف الثالث الثانوي"
+        val loggedIn = prefs.getBoolean("is_logged_in", false)
+        _isLoggedIn.value = loggedIn
         
-        var code = prefs.getString("student_code", "") ?: ""
-        if (code.isBlank()) {
-            code = generateRandomStudentCode()
-            prefs.edit().putString("student_code", code).apply()
-        }
-        _studentCode.value = code
+        _studentName.value = prefs.getString("student_name", "") ?: ""
+        _selectedGrade.value = prefs.getString("selected_grade", "الصف الثالث الثانوي") ?: "الصف الثالث الثانوي"
+        _studentCode.value = prefs.getString("student_code", "") ?: ""
 
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             allLessons.first().let { lessons ->
                 if (lessons.isEmpty()) {
                     seedDefaultEducationalData()
                 }
             }
-            syncWithCloud()
+            if (loggedIn) {
+                syncWithCloud()
+            }
         }
     }
 
     fun setRole(role: Role) {
         _currentRole.value = role
+    }
+
+    fun loginStudent(name: String, code: String, onResult: (Boolean, String?) -> Unit) {
+        viewModelScope.launch {
+            _syncStatus.value = SyncStatus.SYNCING
+            try {
+                val cleanedCode = code.trim().uppercase()
+                val remoteProfile = RetrofitClient.apiService.getStudentByCode("eq.$cleanedCode")
+                if (remoteProfile != null && remoteProfile.isNotEmpty()) {
+                    val p = remoteProfile.first()
+                    loginUserOffline(p.name, p.id, p.gradeLevel)
+                    onResult(true, null)
+                } else {
+                    // Fallback check: if there is matching code locally, let them log in
+                    val localStudents = repository.getStudentsOnce()
+                    val match = localStudents.find { it.id.equals(cleanedCode, ignoreCase = true) }
+                    if (match != null) {
+                        loginUserOffline(match.name, match.id, match.gradeLevel)
+                        onResult(true, null)
+                    } else {
+                        onResult(false, "كود الطالب غير صحيح أو غير مسجل بالمنصة!")
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                // Off-line login fallback
+                val localStudents = repository.getStudentsOnce()
+                val match = localStudents.find { it.id.equals(code.trim(), ignoreCase = true) }
+                if (match != null) {
+                    loginUserOffline(match.name, match.id, match.gradeLevel)
+                    onResult(true, null)
+                } else {
+                    onResult(false, "فشل الاتصال بالإنترنت للتأكد من حسابك: ${e.message}")
+                }
+            } finally {
+                _syncStatus.value = SyncStatus.IDLE
+            }
+        }
+    }
+
+    fun registerStudent(name: String, grade: String, onResult: (Boolean, String?, String?) -> Unit) {
+        viewModelScope.launch {
+            _syncStatus.value = SyncStatus.SYNCING
+            try {
+                val uniqueCode = generateRandomStudentCode()
+                val newProfile = StudentProfile(id = uniqueCode, name = name.trim(), gradeLevel = grade)
+                
+                // Save to Supabase
+                RetrofitClient.apiService.putStudent(newProfile)
+                
+                // Save locally & Log in
+                loginUserOffline(newProfile.name, newProfile.id, newProfile.gradeLevel)
+                
+                onResult(true, uniqueCode, null)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onResult(false, null, "فشل تسجيل الحساب عبر الإنترنت: ${e.message}")
+            } finally {
+                _syncStatus.value = SyncStatus.IDLE
+            }
+        }
+    }
+
+    fun loginUserOffline(name: String, code: String, grade: String) {
+        _studentName.value = name
+        _studentCode.value = code
+        _selectedGrade.value = grade
+        _isLoggedIn.value = true
+        
+        val prefs = getApplication<Application>().getSharedPreferences("academy_prefs", android.content.Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("student_name", name)
+            .putString("student_code", code)
+            .putString("selected_grade", grade)
+            .putBoolean("is_logged_in", true)
+            .apply()
+        
+        viewModelScope.launch {
+            repository.insertStudent(StudentProfile(id = code, name = name, gradeLevel = grade))
+        }
+        syncWithCloud()
+    }
+
+    fun logoutUser() {
+        _isLoggedIn.value = false
+        val prefs = getApplication<Application>().getSharedPreferences("academy_prefs", android.content.Context.MODE_PRIVATE)
+        prefs.edit()
+            .putBoolean("is_logged_in", false)
+            .putString("student_name", "")
+            .putString("student_code", "")
+            .apply()
     }
 
     fun updateStudentProfile(name: String, grade: String, customCode: String? = null) {
@@ -91,6 +186,18 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
             .putString("selected_grade", grade)
             .putString("student_code", finalCode)
             .apply()
+
+        viewModelScope.launch {
+            val updated = StudentProfile(id = finalCode, name = _studentName.value, gradeLevel = grade)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                repository.insertStudent(updated)
+                try {
+                    RetrofitClient.apiService.putStudent(updated)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
     }
 
     fun startExam(exam: Exam) {
@@ -108,28 +215,47 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
             lesson
         }
         viewModelScope.launch {
-            repository.insertLesson(finalLesson)
-            try {
-                RetrofitClient.apiService.putLesson(finalLesson.id.toString(), finalLesson)
-            } catch (e: Exception) {
-                e.printStackTrace()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                repository.insertLesson(finalLesson)
+                try {
+                    RetrofitClient.apiService.putLesson(finalLesson)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
 
     fun toggleLessonCompleted(lesson: Lesson) {
         viewModelScope.launch {
-            repository.updateLesson(lesson.copy(isCompleted = !lesson.isCompleted))
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                repository.updateLesson(lesson.copy(isCompleted = !lesson.isCompleted))
+            }
         }
     }
 
     fun deleteLesson(lessonId: Int) {
         viewModelScope.launch {
-            repository.deleteLesson(lessonId)
-            try {
-                RetrofitClient.apiService.deleteLesson(lessonId.toString())
-            } catch (e: Exception) {
-                e.printStackTrace()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                repository.deleteLesson(lessonId)
+                try {
+                    RetrofitClient.apiService.deleteLesson("eq.$lessonId")
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    fun deleteStudent(studentId: String) {
+        viewModelScope.launch {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                repository.deleteStudent(studentId)
+                try {
+                    RetrofitClient.apiService.deleteStudent("eq.$studentId")
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
@@ -141,22 +267,26 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
             exam
         }
         viewModelScope.launch {
-            repository.insertExam(finalExam)
-            try {
-                RetrofitClient.apiService.putExam(finalExam.id.toString(), finalExam)
-            } catch (e: Exception) {
-                e.printStackTrace()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                repository.insertExam(finalExam)
+                try {
+                    RetrofitClient.apiService.putExam(finalExam)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
 
     fun deleteExam(examId: Int) {
         viewModelScope.launch {
-            repository.deleteExam(examId)
-            try {
-                RetrofitClient.apiService.deleteExam(examId.toString())
-            } catch (e: Exception) {
-                e.printStackTrace()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                repository.deleteExam(examId)
+                try {
+                    RetrofitClient.apiService.deleteExam("eq.$examId")
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
@@ -168,11 +298,61 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
             submission
         }
         viewModelScope.launch {
-            repository.insertSubmission(finalSubmission)
-            try {
-                RetrofitClient.apiService.putSubmission(finalSubmission.id.toString(), finalSubmission)
-            } catch (e: Exception) {
-                e.printStackTrace()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                repository.insertSubmission(finalSubmission)
+                try {
+                    RetrofitClient.apiService.putSubmission(finalSubmission)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    fun generateBulkActivationCodes(lessonId: Int?, count: Int, onComplete: (List<String>) -> Unit) {
+        viewModelScope.launch {
+            val codes = mutableListOf<String>()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+                for (i in 1..count) {
+                    val rand = (1..6).map { chars.random() }.joinToString("")
+                    val codeStr = "HSN-${lessonId ?: "PRE"}-$rand"
+                    codes.add(codeStr)
+                }
+                
+                // Save to Local DB & Cloud in bulk-like inserts
+                codes.forEach { codeStr ->
+                    val codeObj = ActivationCode(
+                        code = codeStr,
+                        lessonId = lessonId,
+                        isUsed = false,
+                        usedBy = ""
+                    )
+                    repository.insertActivationCode(codeObj)
+                    try {
+                        RetrofitClient.apiService.putActivationCode(codeObj)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
+            onComplete(codes)
+        }
+    }
+
+    fun generateNewActivationCode(lessonId: Int? = null) {
+        viewModelScope.launch {
+            val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+            val randomString = (1..6).map { chars.random() }.joinToString("")
+            val codeStr = "HSN-$randomString"
+            val newCode = ActivationCode(code = codeStr, lessonId = lessonId)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                repository.insertActivationCode(newCode)
+                try {
+                    RetrofitClient.apiService.putActivationCode(newCode)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
@@ -181,41 +361,71 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             _syncStatus.value = SyncStatus.SYNCING
             try {
-                val dao = database.academyDao()
-                
-                // 1. Sync Lessons
-                val cloudLessons = RetrofitClient.apiService.getLessons()
-                if (cloudLessons != null) {
-                    val localLessons = dao.getLessonsOnce()
-                    for (cloudLesson in cloudLessons.values) {
-                        val localMatch = localLessons.find { it.id == cloudLesson.id }
-                        if (localMatch != null) {
-                            val merged = cloudLesson.copy(
-                                isCompleted = localMatch.isCompleted,
-                                isUnlocked = localMatch.isUnlocked,
-                                watchTimeSeconds = localMatch.watchTimeSeconds,
-                                isLocalVideo = localMatch.isLocalVideo
-                            )
-                            dao.insertLesson(merged)
-                        } else {
-                            dao.insertLesson(cloudLesson)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val dao = database.academyDao()
+                    
+                    // 1. Sync Lessons
+                    val cloudLessons = RetrofitClient.apiService.getLessons()
+                    if (cloudLessons != null) {
+                        val localLessons = dao.getLessonsOnce()
+                        for (cloudLesson in cloudLessons) {
+                            val localMatch = localLessons.find { it.id == cloudLesson.id }
+                            if (localMatch != null) {
+                                val merged = cloudLesson.copy(
+                                    isCompleted = localMatch.isCompleted,
+                                    isUnlocked = localMatch.isUnlocked,
+                                    watchTimeSeconds = localMatch.watchTimeSeconds,
+                                    isGoogleDrive = localMatch.isGoogleDrive
+                                )
+                                dao.insertLesson(merged)
+                            } else {
+                                dao.insertLesson(cloudLesson)
+                            }
                         }
                     }
-                }
 
-                // 2. Sync Exams
-                val cloudExams = RetrofitClient.apiService.getExams()
-                if (cloudExams != null) {
-                    for (cloudExam in cloudExams.values) {
-                        dao.insertExam(cloudExam)
+                    // 2. Sync Exams
+                    val cloudExams = RetrofitClient.apiService.getExams()
+                    if (cloudExams != null) {
+                        for (cloudExam in cloudExams) {
+                            dao.insertExam(cloudExam)
+                        }
                     }
-                }
 
-                // 3. Sync Submissions
-                val cloudSubmissions = RetrofitClient.apiService.getSubmissions()
-                if (cloudSubmissions != null) {
-                    for (cloudSubmission in cloudSubmissions.values) {
-                        dao.insertSubmission(cloudSubmission)
+                    // 3. Sync Submissions
+                    val cloudSubmissions = RetrofitClient.apiService.getSubmissions()
+                    if (cloudSubmissions != null) {
+                        for (cloudSubmission in cloudSubmissions) {
+                            dao.insertSubmission(cloudSubmission)
+                        }
+                    }
+
+                    // 4. Sync Student Profiles
+                    val cloudStudents = RetrofitClient.apiService.getStudents()
+                    if (cloudStudents != null) {
+                        for (cloudStudent in cloudStudents) {
+                            dao.insertStudent(cloudStudent)
+                        }
+                    }
+
+                    // 5. Sync Activation Codes
+                    val cloudCodes = RetrofitClient.apiService.getActivationCodes()
+                    if (cloudCodes != null) {
+                        val currentStudentName = _studentName.value.trim().uppercase()
+                        for (cloudCode in cloudCodes) {
+                            dao.insertActivationCode(cloudCode)
+                            
+                            // Cloud roaming: If this code has been registered to this student, unlock local copy of the lesson
+                            if (cloudCode.isUsed && 
+                                cloudCode.usedBy.trim().uppercase() == currentStudentName && 
+                                cloudCode.lessonId != null) {
+                                val localLessons = dao.getLessonsOnce()
+                                val matchLesson = localLessons.find { it.id == cloudCode.lessonId }
+                                if (matchLesson != null && !matchLesson.isUnlocked) {
+                                    dao.insertLesson(matchLesson.copy(isUnlocked = true))
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -228,23 +438,64 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
     }
 
     // تفعيل الحصة بالكود المدخل من الطالب
-    fun unlockLesson(lesson: Lesson, enteredCode: String): Boolean {
-        val matches = lesson.activationCode.trim().equals(enteredCode.trim(), ignoreCase = true)
-        if (matches) {
+    fun unlockLesson(lesson: Lesson, enteredCode: String, onResult: (Boolean) -> Unit) {
+        val cleanInput = enteredCode.trim().uppercase()
+        val matchDirect = lesson.activationCode.trim().isNotEmpty() && 
+                lesson.activationCode.trim().equals(cleanInput, ignoreCase = true)
+        
+        if (matchDirect) {
             viewModelScope.launch {
                 repository.updateLesson(lesson.copy(isUnlocked = true))
+                onResult(true)
             }
-            return true
+            return
         }
-        return false
+
+        // Search in generated activation codes list asynchronously using viewModelScope on Dispatchers.IO
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val list = repository.getActivationCodesOnce()
+            // Find if the code is either:
+            // 1. Unused
+            // 2. Used by this current student (to allow re-opening/unlocking)
+            val codeObj = list.find { it.code.trim().uppercase() == cleanInput }
+            if (codeObj != null) {
+                val currentStudent = _studentName.value.trim().uppercase()
+                val codeUsedBy = codeObj.usedBy.trim().uppercase()
+                
+                if (!codeObj.isUsed || (codeObj.isUsed && codeUsedBy == currentStudent)) {
+                    val updatedCode = codeObj.copy(isUsed = true, usedBy = _studentName.value)
+                    repository.insertActivationCode(updatedCode)
+                    repository.updateLesson(lesson.copy(isUnlocked = true))
+                    
+                    try {
+                        RetrofitClient.apiService.putActivationCode(updatedCode)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        onResult(true)
+                    }
+                } else {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        onResult(false)
+                    }
+                }
+            } else {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onResult(false)
+                }
+            }
+        }
     }
 
     // تحديث وتراكم زمن حضور ومشاهدة الطالب للحصة بالثواني
     fun updateLessonWatchTime(lesson: Lesson, additionalSeconds: Int) {
         viewModelScope.launch {
-            repository.updateLesson(lesson.copy(
-                watchTimeSeconds = lesson.watchTimeSeconds + additionalSeconds
-            ))
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                repository.updateLesson(lesson.copy(
+                    watchTimeSeconds = lesson.watchTimeSeconds + additionalSeconds
+                ))
+            }
         }
     }
 
@@ -262,7 +513,7 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
                 isCompleted = false,
                 activationCode = "", // Free, no code needed
                 isUnlocked = true,
-                isLocalVideo = false
+                isGoogleDrive = false
             ),
             Lesson(
                 id = 102,
@@ -276,7 +527,7 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
                 isCompleted = false,
                 activationCode = "HASSAN2026", // Activation code for students to test
                 isUnlocked = false,
-                isLocalVideo = false
+                isGoogleDrive = false
             ),
             Lesson(
                 id = 103,
@@ -290,7 +541,7 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
                 isCompleted = false,
                 activationCode = "HIST500", // Required premium code
                 isUnlocked = false,
-                isLocalVideo = false
+                isGoogleDrive = false
             ),
             Lesson(
                 id = 104,
@@ -304,13 +555,13 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
                 isCompleted = false,
                 activationCode = "HIST99",
                 isUnlocked = false,
-                isLocalVideo = false
+                isGoogleDrive = false
             )
         )
         for (lesson in sampleLessons) {
             repository.insertLesson(lesson)
             try {
-                RetrofitClient.apiService.putLesson(lesson.id.toString(), lesson)
+                RetrofitClient.apiService.putLesson(lesson)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -407,8 +658,8 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
         repository.insertExam(exam1)
         repository.insertExam(exam2)
         try {
-            RetrofitClient.apiService.putExam(exam1.id.toString(), exam1)
-            RetrofitClient.apiService.putExam(exam2.id.toString(), exam2)
+            RetrofitClient.apiService.putExam(exam1)
+            RetrofitClient.apiService.putExam(exam2)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -430,7 +681,7 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
                 examId = 201,
                 examTitle = "الاختبار الشامل للباب الأول (الحملة الفرنسية على مصر والشام)",
                 subject = "التاريخ",
-                studentName = "أحمد عصام", // We map احمد عصام as our current user profiles
+                studentName = "أحمد عصام",
                 score = 30,
                 totalScore = 40,
                 correctCount = 3,
@@ -462,7 +713,7 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
         for (submission in sampleSubmissions) {
             repository.insertSubmission(submission)
             try {
-                RetrofitClient.apiService.putSubmission(submission.id.toString(), submission)
+                RetrofitClient.apiService.putSubmission(submission)
             } catch (e: Exception) {
                 e.printStackTrace()
             }

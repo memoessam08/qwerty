@@ -46,6 +46,7 @@ fun MainAppScreen() {
     )
 
     // Collect variables
+    val isLoggedIn by viewModel.isLoggedIn.collectAsStateWithLifecycle()
     val currentRole by viewModel.currentRole.collectAsStateWithLifecycle()
     val studentName by viewModel.studentName.collectAsStateWithLifecycle()
     val studentCode by viewModel.studentCode.collectAsStateWithLifecycle()
@@ -53,6 +54,7 @@ fun MainAppScreen() {
     val lessons by viewModel.allLessons.collectAsStateWithLifecycle(initialValue = emptyList())
     val exams by viewModel.allExams.collectAsStateWithLifecycle(initialValue = emptyList())
     val submissions by viewModel.allSubmissions.collectAsStateWithLifecycle(initialValue = emptyList())
+    val students by viewModel.allStudentsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val activeExam by viewModel.activeExam.collectAsStateWithLifecycle()
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
 
@@ -78,7 +80,14 @@ fun MainAppScreen() {
             color = MaterialTheme.colorScheme.background
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
-                if (activeExam != null) {
+                if (!isLoggedIn) {
+                    LoginAndRegisterView(
+                        viewModel = viewModel,
+                        onLoginSuccess = {
+                            Toast.makeText(context, "تم تسجيل الدخول بنجاح! 👋", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                } else if (activeExam != null) {
                     // Elevated fullscreen exam taking module
                     ExamTakerView(
                         exam = activeExam!!,
@@ -141,7 +150,7 @@ fun MainAppScreen() {
                                             )
                                             Spacer(modifier = Modifier.width(6.dp))
                                             Text(
-                                                text = studentName.take(12),
+                                                text = studentName.substringBefore(" - ").take(12),
                                                 fontSize = 12.sp,
                                                 color = Color.White,
                                                 fontWeight = FontWeight.Bold
@@ -181,12 +190,17 @@ fun MainAppScreen() {
                                 currentRole = currentRole,
                                 studentName = studentName,
                                 grade = selectedGrade,
+                                studentCode = studentCode,
                                 onRoleChange = { role ->
-                                    if (role == AcademyViewModel.Role.TEACHER) {
-                                        showTeacherPasswordDialog = true
+                                    if (studentCode == "ADMIN") {
+                                        if (role == AcademyViewModel.Role.TEACHER) {
+                                            showTeacherPasswordDialog = true
+                                        } else {
+                                            viewModel.setRole(role)
+                                            Toast.makeText(context, "العرض بصفة: طالب", Toast.LENGTH_SHORT).show()
+                                        }
                                     } else {
-                                        viewModel.setRole(role)
-                                        Toast.makeText(context, "العرض بصفة: طالب", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "غير مسموح بالتحويل لحساب معلم!", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             )
@@ -228,11 +242,17 @@ fun MainAppScreen() {
                                         exams = exams,
                                         submissions = submissions,
                                         onNavigateToAddLesson = { currentTeacherTab = "T_ADD_LESSON" },
-                                        onNavigateToAddExam = { currentTeacherTab = "T_ADD_EXAM" }
+                                        onNavigateToAddExam = { currentTeacherTab = "T_ADD_EXAM" },
+                                        onDeleteLesson = { id -> viewModel.deleteLesson(id) },
+                                        onGenerateBulkCodes = { lesson, count, onComplete ->
+                                            viewModel.generateBulkActivationCodes(lesson.id, count, onComplete)
+                                        }
                                     )
                                     "T_ADD_LESSON" -> TeacherAddLessonTab(
-                                        onSubmit = { title, desc, sub, grade, videoId, pdf, code, isLocal ->
+                                        onSubmit = { title, desc, sub, grade, videoId, pdf, code, isDrive, genBulk, bulkCount ->
+                                            val lessonId = (System.currentTimeMillis() % 100000000).toInt()
                                             val newLesson = Lesson(
+                                                id = lessonId,
                                                 title = title,
                                                 description = desc,
                                                 subject = sub,
@@ -242,9 +262,22 @@ fun MainAppScreen() {
                                                 durationMinutes = 45,
                                                 activationCode = code,
                                                 isUnlocked = code.isBlank(), // مفتوحة تلقائياً إذا لم يحدد المدرس كود تفعيل لها
-                                                isLocalVideo = isLocal
+                                                isGoogleDrive = isDrive
                                             )
                                             viewModel.saveLesson(newLesson)
+                                            
+                                            if (genBulk && bulkCount > 0) {
+                                                viewModel.generateBulkActivationCodes(lessonId, bulkCount) { codes ->
+                                                    val cleanTitle = title.replace(" ", "_").replace("/", "-")
+                                                    val filename = "أكواد_حصة_${cleanTitle}.txt"
+                                                    val fileContent = "أكواد تفعيل حصة الأستاذ حسين حسن: ${title}\n" +
+                                                        "تاريخ التوليد: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}\n\n" +
+                                                        codes.joinToString("\n")
+                                                    
+                                                    saveTextFileToDownloads(context, filename, fileContent)
+                                                }
+                                            }
+                                            
                                             Toast.makeText(context, "تم حفظ ونشر الحصة بنجاح!", Toast.LENGTH_SHORT).show()
                                             currentTeacherTab = "T_STATS"
                                         }
@@ -268,7 +301,9 @@ fun MainAppScreen() {
                                         submissions = submissions,
                                         lessons = lessons,
                                         currentStudentName = studentName,
-                                        currentStudentCode = studentCode
+                                        currentStudentCode = studentCode,
+                                        studentsFromDb = students,
+                                        onDeleteStudent = { viewModel.deleteStudent(it) }
                                     )
                                 }
                             }
@@ -289,12 +324,13 @@ fun MainAppScreen() {
                             viewModel.updateLessonWatchTime(lessonToWatch!!, seconds)
                             lessonToWatch = lessonToWatch!!.copy(watchTimeSeconds = lessonToWatch!!.watchTimeSeconds + seconds)
                         },
-                        onUnlockWithCode = { enteredCode ->
-                            val success = viewModel.unlockLesson(lessonToWatch!!, enteredCode)
-                            if (success) {
-                                lessonToWatch = lessonToWatch!!.copy(isUnlocked = true)
+                        onUnlockWithCode = { enteredCode, onCompleted ->
+                            viewModel.unlockLesson(lessonToWatch!!, enteredCode) { success ->
+                                if (success) {
+                                    lessonToWatch = lessonToWatch!!.copy(isUnlocked = true)
+                                }
+                                onCompleted(success)
                             }
-                            success
                         }
                     )
                 }
@@ -346,6 +382,7 @@ fun RoleSelectorHeader(
     currentRole: AcademyViewModel.Role,
     studentName: String,
     grade: String,
+    studentCode: String,
     onRoleChange: (AcademyViewModel.Role) -> Unit
 ) {
     Card(
@@ -363,7 +400,10 @@ fun RoleSelectorHeader(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Box(
                     modifier = Modifier
                         .size(44.dp)
@@ -380,7 +420,7 @@ fun RoleSelectorHeader(
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
                     Text(
-                        text = if (currentRole == AcademyViewModel.Role.STUDENT) studentName else "الأستاذ / المعلم المسؤول",
+                        text = if (currentRole == AcademyViewModel.Role.STUDENT) studentName.substringBefore(" - ") else "الأستاذ / المعلم المسؤول",
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp
                     )
@@ -392,42 +432,70 @@ fun RoleSelectorHeader(
                 }
             }
 
-            // Role selection buttons
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(MaterialTheme.colorScheme.background)
-                    .padding(2.dp)
-            ) {
-                Surface(
-                    onClick = { onRoleChange(AcademyViewModel.Role.STUDENT) },
-                    color = if (currentRole == AcademyViewModel.Role.STUDENT) MaterialTheme.colorScheme.primary else Color.Transparent,
-                    shape = RoundedCornerShape(18.dp)
+            // Role selection buttons - only if logged in as admin/teacher
+            if (studentCode == "ADMIN") {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(MaterialTheme.colorScheme.background)
+                        .padding(2.dp)
                 ) {
-                    Text(
-                        text = "طالب",
-                        modifier = Modifier
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
-                            .testTag("student_mode_button"),
-                        color = if (currentRole == AcademyViewModel.Role.STUDENT) Color.White else MaterialTheme.colorScheme.onBackground,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
+                    Surface(
+                        onClick = { onRoleChange(AcademyViewModel.Role.STUDENT) },
+                        color = if (currentRole == AcademyViewModel.Role.STUDENT) MaterialTheme.colorScheme.primary else Color.Transparent,
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Text(
+                            text = "طالب",
+                            modifier = Modifier
+                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                                .testTag("student_mode_button"),
+                            color = if (currentRole == AcademyViewModel.Role.STUDENT) Color.White else MaterialTheme.colorScheme.onBackground,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Surface(
+                        onClick = { onRoleChange(AcademyViewModel.Role.TEACHER) },
+                        color = if (currentRole == AcademyViewModel.Role.TEACHER) MaterialTheme.colorScheme.primary else Color.Transparent,
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Text(
+                            text = "معلم",
+                            modifier = Modifier
+                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                                .testTag("teacher_mode_button"),
+                            color = if (currentRole == AcademyViewModel.Role.TEACHER) Color.White else MaterialTheme.colorScheme.onBackground,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
                 }
+            } else {
+                // For regular students, display a stylish green active student badge
                 Surface(
-                    onClick = { onRoleChange(AcademyViewModel.Role.TEACHER) },
-                    color = if (currentRole == AcademyViewModel.Role.TEACHER) MaterialTheme.colorScheme.primary else Color.Transparent,
-                    shape = RoundedCornerShape(18.dp)
+                    color = EmeraldSuccess.copy(0.12f),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, EmeraldSuccess.copy(0.3f))
                 ) {
-                    Text(
-                        text = "معلم",
-                        modifier = Modifier
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
-                            .testTag("teacher_mode_button"),
-                        color = if (currentRole == AcademyViewModel.Role.TEACHER) Color.White else MaterialTheme.colorScheme.onBackground,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(EmeraldSuccess)
+                        )
+                        Text(
+                            text = "نشط 🟢",
+                            color = EmeraldSuccess,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
@@ -554,6 +622,45 @@ fun StudentLessonsTab(
                         fontSize = 15.sp,
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
+                }
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f)
+                        ),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = "Security Alert",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(32.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "أنظمة حماية حقوق البث والنشر 🛡️",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                Text(
+                                    text = "يمنع تنزيل الحصص أو تحميلها على الأجهزة. تم تفعيل نظام منع تصوير الشاشة أو تسجيل الفيديو تلقائياً لحفظ حقوق الأستاذ حسين حسن.",
+                                    fontSize = 10.sp,
+                                    lineHeight = 14.sp,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        }
+                    }
                 }
                 items(filteredLessons) { lesson ->
                     LessonVisualCard(
@@ -1433,8 +1540,14 @@ fun TeacherDashboardStatsTab(
     exams: List<Exam>,
     submissions: List<QuizSubmission>,
     onNavigateToAddLesson: () -> Unit,
-    onNavigateToAddExam: () -> Unit
+    onNavigateToAddExam: () -> Unit,
+    onDeleteLesson: (Int) -> Unit,
+    onGenerateBulkCodes: (Lesson, Int, (List<String>) -> Unit) -> Unit
 ) {
+    val context = LocalContext.current
+    var lessonForBulkCodes by remember { mutableStateOf<Lesson?>(null) }
+    var dialogBulkCount by remember { mutableStateOf(100) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1546,6 +1659,111 @@ fun TeacherDashboardStatsTab(
 
         Spacer(modifier = Modifier.height(20.dp))
 
+        // Manage/Delete Lessons Section
+        Text(
+            text = "إدارة وحذف الحصص المرفوعة حالياً 🎥:",
+            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        if (lessons.isEmpty()) {
+            Text(
+                text = "لا توجد حصص مرفوعة حالياً بالفيديو لتعديلها أو حذفها.",
+                color = MaterialTheme.colorScheme.outline,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
+        } else {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(0.12f))
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    lessons.forEachIndexed { index, lesson ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(AcademicBlue.copy(0.1f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (lesson.isGoogleDrive) Icons.Default.FolderOpen else Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        tint = AcademicBlue,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = lesson.title,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        maxLines = 1
+                                    )
+                                    Text(
+                                        text = "${lesson.gradeLevel} • ${lesson.subject}",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            }
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        lessonForBulkCodes = lesson
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.VpnKey,
+                                        contentDescription = "توليد أكواد التفعيل الحركية",
+                                        tint = AcademicBlue
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        onDeleteLesson(lesson.id)
+                                        Toast.makeText(context, "تم حذف حصة: ${lesson.title} 🗑️", Toast.LENGTH_SHORT).show()
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "حذف الحصة",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
+                        if (index < lessons.size - 1) {
+                            Divider(color = MaterialTheme.colorScheme.outline.copy(0.08f))
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
         // Latest submissions ticker
         Text(
             text = "آخر الطلاب الذين أدوا الاختبارات مسبقاً:",
@@ -1590,6 +1808,93 @@ fun TeacherDashboardStatsTab(
             }
         }
     }
+
+    if (lessonForBulkCodes != null) {
+        val targetLesson = lessonForBulkCodes!!
+        AlertDialog(
+            onDismissRequest = { lessonForBulkCodes = null },
+            title = {
+                Text(
+                    text = "توليد باقة أكواد تفعيل جديدة 🔑",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "الحصة المستهدفة: ${targetLesson.title}",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "اختر عدد الأكواد المطلوب إصدارها للحصة وتصديرها مباشرةً:",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+
+                    Text(
+                        text = "العدد: $dialogBulkCount كود",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+
+                    Slider(
+                        value = dialogBulkCount.toFloat(),
+                        onValueChange = { dialogBulkCount = it.toInt() },
+                        valueRange = 10f..500f,
+                        steps = 49
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(20, 50, 100, 200).forEach { num ->
+                            FilterChip(
+                                selected = dialogBulkCount == num,
+                                onClick = { dialogBulkCount = num },
+                                label = { Text("$num كود", fontSize = 10.sp) }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val currentCount = dialogBulkCount
+                        onGenerateBulkCodes(targetLesson, currentCount) { codes ->
+                            val cleanTitle = targetLesson.title.replace(" ", "_").replace("/", "-")
+                            val filename = "أكواد_إضافية_حصة_${cleanTitle}.txt"
+                            val fileContent = "أكواد تفعيل إضافية لحصة: ${targetLesson.title}\n" +
+                                "تاريخ التوليد: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}\n\n" +
+                                codes.joinToString("\n")
+                            
+                            saveTextFileToDownloads(context, filename, fileContent)
+                        }
+                        lessonForBulkCodes = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AcademicBlue)
+                ) {
+                    Text("توليد وتصدير الملف 📥", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { lessonForBulkCodes = null }) {
+                    Text("إلغاء", fontSize = 12.sp)
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -1622,7 +1927,7 @@ fun TeacherStatCard(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TeacherAddLessonTab(
-    onSubmit: (String, String, String, String, String, String, String, Boolean) -> Unit
+    onSubmit: (String, String, String, String, String, String, String, Boolean, Boolean, Int) -> Unit
 ) {
     var title by remember { mutableStateOf("") }
     var desc by remember { mutableStateOf("") }
@@ -1632,22 +1937,14 @@ fun TeacherAddLessonTab(
     var pdfLink by remember { mutableStateOf("") }
     var activationCode by remember { mutableStateOf("") }
     
-    // Video Type selection: YOUTUBE link vs. phone upload
-    var isLocalVideo by remember { mutableStateOf(false) }
-    var localVideoFormatPath by remember { mutableStateOf("") }
+    // Video Type selection: YOUTUBE link vs. Google Drive embed
+    var isGoogleDrive by remember { mutableStateOf(false) }
+
+    // Bulk activation codes parameters
+    var generateBulkCodes by remember { mutableStateOf(false) }
+    var bulkCodesCount by remember { mutableStateOf(100) }
 
     val context = LocalContext.current
-    val videoPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
-    ) { uri: android.net.Uri? ->
-        if (uri != null) {
-            youtubeId = uri.toString()
-            localVideoFormatPath = uri.toString()
-            isLocalVideo = true
-            Toast.makeText(context, "تم تحديد ملف الفيديو من الهاتف بنجاح 🎥", Toast.LENGTH_SHORT).show()
-        }
-    }
-
     val subjects = listOf("التاريخ")
     val grades = listOf("الصف الأول الثانوي", "الصف الثاني الثانوي", "الصف الثالث الثانوي")
 
@@ -1741,38 +2038,35 @@ fun TeacherAddLessonTab(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     ElevatedButton(
-                        onClick = { isLocalVideo = false },
+                        onClick = { isGoogleDrive = false },
                         colors = ButtonDefaults.elevatedButtonColors(
-                            containerColor = if (!isLocalVideo) AcademicBlue else MaterialTheme.colorScheme.surface
+                            containerColor = if (!isGoogleDrive) AcademicBlue else MaterialTheme.colorScheme.surface
                         ),
                         modifier = Modifier.weight(1f)
                     ) {
                         Text(
                             text = "مقطع يوتيوب 🌐",
-                            color = if (!isLocalVideo) Color.White else MaterialTheme.colorScheme.onSurface,
+                            color = if (!isGoogleDrive) Color.White else MaterialTheme.colorScheme.onSurface,
                             fontSize = 12.sp
                         )
                     }
 
                     ElevatedButton(
-                        onClick = { 
-                            isLocalVideo = true 
-                            videoPickerLauncher.launch("video/*")
-                        },
+                        onClick = { isGoogleDrive = true },
                         colors = ButtonDefaults.elevatedButtonColors(
-                            containerColor = if (isLocalVideo) EmeraldSuccess else MaterialTheme.colorScheme.surface
+                            containerColor = if (isGoogleDrive) EmeraldSuccess else MaterialTheme.colorScheme.surface
                         ),
                         modifier = Modifier.weight(1f)
                     ) {
                         Text(
-                            text = "من استوديو الهاتف 📱",
-                            color = if (isLocalVideo) Color.White else MaterialTheme.colorScheme.onSurface,
+                            text = "جوجل درايف 📁",
+                            color = if (isGoogleDrive) Color.White else MaterialTheme.colorScheme.onSurface,
                             fontSize = 12.sp
                         )
                     }
                 }
 
-                if (!isLocalVideo) {
+                if (!isGoogleDrive) {
                     OutlinedTextField(
                         value = youtubeId,
                         onValueChange = { youtubeId = it },
@@ -1782,21 +2076,14 @@ fun TeacherAddLessonTab(
                         singleLine = true
                     )
                 } else {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = EmeraldSuccess)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text("تم ربط مقطع فيديو محلي من تليفون المدرس", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            Text(
-                                text = localVideoFormatPath.take(50) + "...", 
-                                fontSize = 10.sp, 
-                                color = MaterialTheme.colorScheme.outline
-                            )
-                        }
-                    }
+                    OutlinedTextField(
+                        value = youtubeId,
+                        onValueChange = { youtubeId = it },
+                        label = { Text("رابط مشاركة أو معرف قوقل درايف (ID)") },
+                        placeholder = { Text("أدخل رابط معاينة الفيديو من قوقل درايف") },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        singleLine = true
+                    )
                 }
             }
         }
@@ -1813,16 +2100,98 @@ fun TeacherAddLessonTab(
         )
 
         // Activation Code field
-        OutlinedTextField(
-            value = activationCode,
-            onValueChange = { activationCode = it },
-            label = { Text("كود تفعيل الحصة لمنع فتحها إلا بالدفع 🔐") },
-            placeholder = { Text("اتركه فارغاً لتكون الحصة مجانية ومتاحة للجميع") },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 6.dp),
-            singleLine = true
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = activationCode,
+                onValueChange = { activationCode = it },
+                label = { Text("كود تفعيل الحصة 🔐") },
+                placeholder = { Text("اتركه فارغاً لتكون مجانية") },
+                modifier = Modifier.weight(1.5f),
+                singleLine = true
+            )
+            
+            Button(
+                onClick = {
+                    val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+                    val rand = (1..6).map { chars.random() }.joinToString("")
+                    activationCode = "HSN-$rand"
+                    Toast.makeText(context, "تم توليد كود تفعيل تلقائي بنجاح! ⚡", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(containerColor = AmberGold)
+            ) {
+                Text("توليد كود ⚡", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+            }
+        }
+
+        // Bulk Code Generation Section
+        Spacer(modifier = Modifier.height(14.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(0.2f)),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(0.05f))
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "توليد باقة أكواد تفعيل جماعية 🔑",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "توليد ملف نصي تيكست (.txt) يحتوي على باقة كبيرة من أكواد تفعيل الحصص المانعة للنسخ وتنزيله لتوزيعه.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                    Switch(
+                        checked = generateBulkCodes,
+                        onCheckedChange = { generateBulkCodes = it }
+                    )
+                }
+
+                if (generateBulkCodes) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "عدد الأكواد المطلوبة: $bulkCodesCount كود تفعيل",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    
+                    Slider(
+                        value = bulkCodesCount.toFloat(),
+                        onValueChange = { bulkCodesCount = it.toInt() },
+                        valueRange = 10f..500f,
+                        steps = 49 // steps of 10
+                    )
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        listOf(20, 50, 100, 200, 500).forEach { num ->
+                            FilterChip(
+                                selected = bulkCodesCount == num,
+                                onClick = { bulkCodesCount = num },
+                                label = { Text("$num كود", fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(18.dp))
 
@@ -1831,9 +2200,10 @@ fun TeacherAddLessonTab(
                 if (title.isBlank() || desc.isBlank()) {
                     // Fail gracefully
                 } else {
-                    val finalVid = if (isLocalVideo) youtubeId else youtubeId.ifBlank { "https://www.w3.org/2010/05/video/mediaelement.mp4" }
+                    val finalVid = if (isGoogleDrive) youtubeId else youtubeId.ifBlank { "https://www.w3.org/2010/05/video/mediaelement.mp4" }
                     val finalPdf = pdfLink.ifBlank { "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf" }
-                    onSubmit(title, desc, subject, gradeLevel, finalVid, finalPdf, activationCode, isLocalVideo)
+                    val finalCode = if (activationCode.isBlank() && generateBulkCodes) "REQUIRED_BULK" else activationCode
+                    onSubmit(title, desc, subject, gradeLevel, finalVid, finalPdf, finalCode, isGoogleDrive, generateBulkCodes, bulkCodesCount)
                 }
             },
             modifier = Modifier
@@ -2061,16 +2431,30 @@ fun TeacherStudentsLedgerTab(
     submissions: List<QuizSubmission>,
     lessons: List<Lesson>,
     currentStudentName: String,
-    currentStudentCode: String
+    currentStudentCode: String,
+    studentsFromDb: List<StudentProfile>,
+    onDeleteStudent: (String) -> Unit
 ) {
+    val context = LocalContext.current
     var activeSubTab by remember { mutableStateOf("STUDENTS_DOSSIER") } // STUDENTS_DOSSIER, WATCH_TIMERS, EXAM_LEDGER
     var searchQuery by remember { mutableStateOf("") }
 
-    val studentsList = (submissions.map { it.studentName } + listOf("أحمد عصام", "مي عصام الدين الجمال", "عبد الله السيد خليل")).distinct().sorted()
+    val dbStudentNames = studentsFromDb.map { it.name }
+    val simulatedNames = listOf("أحمد عصام", "مي عصام الدين الجمال", "عبد الله السيد خليل")
+    val studentsList = (dbStudentNames + submissions.map { it.studentName } + simulatedNames).distinct().sorted()
     var selectedStudent by remember { mutableStateOf(studentsList.firstOrNull() ?: "أحمد عصام") }
+
+    // Is it a real / delete-able profile from database?
+    fun getDbStudentId(student: String): String? {
+        return studentsFromDb.find { it.name == student }?.id
+    }
 
     // Resolve unique student registration code
     fun getStudentCode(student: String): String {
+        val dbMatch = studentsFromDb.find { it.name == student }
+        if (dbMatch != null) {
+            return dbMatch.id
+        }
         if (student == currentStudentName) {
             return currentStudentCode
         }
@@ -2178,10 +2562,28 @@ fun TeacherStudentsLedgerTab(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(0.12f))
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
+                        val parts = selectedStudent.split(" - ")
+                        val cleanName = parts.getOrNull(0) ?: selectedStudent
+                        var centerVal = "غير محدد"
+                        var studentPhoneVal = "غير مسجل"
+                        var parentPhoneVal = "غير مسجل"
+
+                        parts.forEach { part ->
+                            val p = part.trim()
+                            if (p.startsWith("سنتر:")) {
+                                centerVal = p.removePrefix("سنتر:").trim()
+                            } else if (p.startsWith("هاتف الطالب:")) {
+                                studentPhoneVal = p.removePrefix("هاتف الطالب:").trim()
+                            } else if (p.startsWith("ولي الأمر:")) {
+                                parentPhoneVal = p.removePrefix("ولي الأمر:").trim()
+                            }
+                        }
+
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
+
                             Box(
                                 modifier = Modifier
                                     .size(42.dp)
@@ -2190,7 +2592,7 @@ fun TeacherStudentsLedgerTab(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = selectedStudent.take(1),
+                                    text = cleanName.take(1),
                                     fontWeight = FontWeight.Bold,
                                     color = Color.White,
                                     fontSize = 18.sp
@@ -2202,7 +2604,7 @@ fun TeacherStudentsLedgerTab(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(
-                                        text = selectedStudent,
+                                        text = cleanName,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 15.sp,
                                         color = MaterialTheme.colorScheme.primary
@@ -2225,6 +2627,119 @@ fun TeacherStudentsLedgerTab(
                                     fontSize = 10.sp,
                                     color = MaterialTheme.colorScheme.outline
                                 )
+                            }
+                        }
+
+                        // Detailed Student Data Information Cards
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 10.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(0.15f)),
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(0.08f))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Place,
+                                        contentDescription = null,
+                                        tint = AcademicBlue,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "مكان الحضور (السنتر):",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                    Text(
+                                        text = centerVal,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Phone,
+                                        contentDescription = null,
+                                        tint = EmeraldSuccess,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "هاتف الطالب:",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                    Text(
+                                        text = studentPhoneVal,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SupervisorAccount,
+                                        contentDescription = null,
+                                        tint = RoseError,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "هاتف ولي الأمر:",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                    Text(
+                                        text = parentPhoneVal,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+
+                                val matchedProfile = studentsFromDb.find { it.name == selectedStudent }
+                                val gradeLabel = matchedProfile?.gradeLevel ?: "الصف الثالث الثانوي"
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.School,
+                                        contentDescription = null,
+                                        tint = AmberGold,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "المكتبة / الصف الدراسي:",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                    Text(
+                                        text = gradeLabel,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
                             }
                         }
 
@@ -2253,6 +2768,39 @@ fun TeacherStudentsLedgerTab(
                                 Text("حصص لم يحضرها:", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
                                 Text("$missedCount غياب 🚫", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = RoseError)
                             }
+                        }
+
+                        // Delete button if real database profile is selected
+                        val dbStudentId = getDbStudentId(selectedStudent)
+                        if (dbStudentId != null) {
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Button(
+                                onClick = {
+                                    onDeleteStudent(dbStudentId)
+                                    Toast.makeText(context, "تم حذف حساب الطالب $selectedStudent بنجاح! 🗑️", Toast.LENGTH_SHORT).show()
+                                    selectedStudent = "أحمد عصام"
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "حذف الكود وحساب الطالب",
+                                    tint = Color.White
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("حذف كود وحساب الطالب نهائياً من النظام 🗑️", fontWeight = FontWeight.Bold, color = Color.White)
+                            }
+                        } else {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "💡 هذا الحساب تجريبي افتراضي أو قادم من سجل مشاركات قديم ولا يمكن حذفه من المنصة.",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.outline,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
                 }
@@ -3153,27 +3701,43 @@ fun WatchVideoDialog(
     onDismiss: () -> Unit,
     onMarkCompleted: () -> Unit,
     onUpdateWatchTime: (Int) -> Unit,
-    onUnlockWithCode: (String) -> Boolean
+    onUnlockWithCode: (String, (Boolean) -> Unit) -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var enteredCode by remember { mutableStateOf("") }
     var codeErrorMsg by remember { mutableStateOf<String?>(null) }
+    var isUnlocking by remember { mutableStateOf(false) }
     
     val isLocked = lesson.activationCode.isNotEmpty() && !lesson.isUnlocked
 
     // Live study duration tracking loop (ticks every second and saves)
     var activeStudySeconds by remember { mutableStateOf(lesson.watchTimeSeconds) }
+    var sessionAccumulatedSeconds by remember { mutableStateOf(0) }
+
+    val handleDismiss = {
+        if (sessionAccumulatedSeconds > 0) {
+            onUpdateWatchTime(sessionAccumulatedSeconds)
+        }
+        onDismiss()
+    }
+
     if (!isLocked) {
         LaunchedEffect(key1 = true) {
             while (true) {
                 delay(1000L)
                 activeStudySeconds += 1
-                onUpdateWatchTime(1)
+                sessionAccumulatedSeconds += 1
+                
+                // Save periodically every 15 seconds to minimize disk writes and UI redraw overhead
+                if (sessionAccumulatedSeconds >= 15) {
+                    onUpdateWatchTime(15)
+                    sessionAccumulatedSeconds = 0
+                }
             }
         }
     }
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = handleDismiss) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3240,21 +3804,34 @@ fun WatchVideoDialog(
 
                         Button(
                             onClick = {
-                                val success = onUnlockWithCode(enteredCode)
-                                if (success) {
-                                    codeErrorMsg = null
-                                    Toast.makeText(context, "تم تفعيل وفتح الحصة بنجاح! 🏛️", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    codeErrorMsg = "كود التفعيل غير صحيح! يرجى مراجعة الأستاذ حسين حسن."
+                                if (enteredCode.isBlank()) return@Button
+                                isUnlocking = true
+                                onUnlockWithCode(enteredCode) { success ->
+                                    isUnlocking = false
+                                    if (success) {
+                                        codeErrorMsg = null
+                                        Toast.makeText(context, "تم تفعيل وفتح الحصة بنجاح! 🏛️", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        codeErrorMsg = "كود التفعيل غير صحيح! يرجى مراجعة الأستاذ حسين حسن."
+                                    }
                                 }
                             },
+                            enabled = !isUnlocking && enteredCode.isNotBlank(),
                             colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess),
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Icon(imageVector = Icons.Default.Key, contentDescription = null)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("تفعيــل وفـك القفـل الآن", fontWeight = FontWeight.Bold)
+                            if (isUnlocking) {
+                                androidx.compose.material3.CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(imageVector = Icons.Default.Key, contentDescription = null)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("تفعيــل وفـك القفـل الآن", fontWeight = FontWeight.Bold)
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(8.dp))
@@ -3275,29 +3852,33 @@ fun WatchVideoDialog(
                             .background(Color.Black),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (lesson.isLocalVideo) {
-                            // Video player from native media path
-                            androidx.compose.ui.viewinterop.AndroidView(
-                                factory = { ctx ->
-                                    android.widget.VideoView(ctx).apply {
-                                        try {
-                                            val uri = android.net.Uri.parse(lesson.videoId)
-                                            setVideoURI(uri)
-                                            val mediaController = android.widget.MediaController(ctx)
-                                            mediaController.setAnchorView(this)
-                                            setMediaController(mediaController)
-                                            start()
-                                        } catch (e: Exception) {
-                                            // Fallback
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.fillMaxSize()
-                            )
+                        if (lesson.isGoogleDrive) {
+                            // Embed Google Drive Video in Webview
+                            val driveUrl = if (lesson.videoId.startsWith("http")) {
+                                if (lesson.videoId.contains("/preview") || lesson.videoId.contains("/view")) {
+                                    lesson.videoId
+                                } else {
+                                    // if it's drive share link form, try to build preview link
+                                    lesson.videoId.replace("/view?usp=drivesdk", "/preview").replace("/view", "/preview")
+                                }
+                            } else {
+                                "https://drive.google.com/file/d/${lesson.videoId}/preview"
+                            }
+                            android.webkit.WebView(LocalContext.current).apply {
+                                settings.javaScriptEnabled = true
+                                settings.allowContentAccess = true
+                                settings.domStorageEnabled = true
+                                webViewClient = android.webkit.WebViewClient()
+                                loadUrl(driveUrl)
+                            }.let { view ->
+                                androidx.compose.ui.viewinterop.AndroidView(
+                                    factory = { view },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         } else {
                             // YouTube iframe web view
                             val link = if (lesson.videoId.startsWith("http")) lesson.videoId else "https://www.youtube.com/embed/${lesson.videoId}"
-                            android.view.View(LocalContext.current)
                             android.webkit.WebView(LocalContext.current).apply {
                                 settings.javaScriptEnabled = true
                                 webViewClient = android.webkit.WebViewClient()
@@ -3344,6 +3925,30 @@ fun WatchVideoDialog(
                             fontSize = 11.sp
                         )
 
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(EmeraldSuccess.copy(0.12f), RoundedCornerShape(8.dp))
+                                .border(1.dp, EmeraldSuccess.copy(0.24f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tv,
+                                contentDescription = null,
+                                tint = EmeraldSuccess,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "مسموح العرض الخارجي: تم تفعيل البث والعرض على البروجيكتور والشاشات الخارجية 📺",
+                                color = EmeraldSuccess,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = lesson.description,
@@ -3357,7 +3962,7 @@ fun WatchVideoDialog(
                         Button(
                             onClick = {
                                 onMarkCompleted()
-                                onDismiss()
+                                handleDismiss()
                             },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (lesson.isCompleted) EmeraldSuccess else MaterialTheme.colorScheme.primary
@@ -3376,7 +3981,7 @@ fun WatchVideoDialog(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         TextButton(
-                            onClick = onDismiss,
+                            onClick = handleDismiss,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("إغلاق والرجوع للحصص", color = RoseError)
@@ -3500,3 +4105,470 @@ fun QuizReportCertificate(
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LoginAndRegisterView(
+    viewModel: AcademyViewModel,
+    onLoginSuccess: () -> Unit
+) {
+    var isRegisterMode by remember { mutableStateOf(false) }
+    var nameInput by remember { mutableStateOf("") }
+    var codeInput by remember { mutableStateOf("") }
+    var selectedGrade by remember { mutableStateOf("الصف الثالث الثانوي") }
+    var centerInput by remember { mutableStateOf("") }
+    var parentPhoneInput by remember { mutableStateOf("") }
+    var studentPhoneInput by remember { mutableStateOf("") }
+    
+    var showValidationErrors by remember { mutableStateOf(false) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+    var isVerifying by remember { mutableStateOf(false) }
+    var generatedCodeDialog by remember { mutableStateOf<String?>(null) }
+    var showTeacherPasswordDialog by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val grades = listOf("الصف الأول الثانوي", "الصف الثاني الثانوي", "الصف الثالث الثانوي")
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .background(
+                brush = okhttp3.internal.concurrent.TaskRunner.logger.let {
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.colorScheme.secondary,
+                            MaterialTheme.colorScheme.background
+                        )
+                    )
+                }
+            )
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Spacer(modifier = Modifier.height(30.dp))
+        
+        // Brand logo
+        Box(
+            modifier = Modifier
+                .size(90.dp)
+                .clip(CircleShape)
+                .background(AmberGold.copy(0.15f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.School,
+                contentDescription = null,
+                tint = AmberGold,
+                modifier = Modifier.size(56.dp)
+            )
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        Text(
+            text = "منصة الأستاذ حسين حسن التعليمية",
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 22.sp,
+            color = Color.White,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = "بوابتك الإلكترونية في مادة التاريخ للثانوية العامة 🏛️",
+            fontSize = 12.sp,
+            color = AmberGold,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+        
+        Spacer(modifier = Modifier.height(30.dp))
+        
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 10.dp),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = if (isRegisterMode) "إنشاء حساب طالب جديد 📝" else "تسجيل الدخول للمنصة 🔐",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 18.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                
+                Spacer(modifier = Modifier.height(18.dp))
+
+                val isNameError = showValidationErrors && (nameInput.isBlank() || (isRegisterMode && nameInput.trim().split("\\s+".toRegex()).size < 3))
+                val isCenterError = showValidationErrors && isRegisterMode && centerInput.isBlank()
+                val isParentError = showValidationErrors && isRegisterMode && (parentPhoneInput.isBlank() || parentPhoneInput.length < 11 || !parentPhoneInput.all { it.isDigit() })
+                val isStudentError = showValidationErrors && isRegisterMode && (studentPhoneInput.isBlank() || studentPhoneInput.length < 11 || !studentPhoneInput.all { it.isDigit() })
+                val isCodeError = showValidationErrors && !isRegisterMode && codeInput.isBlank()
+                
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { 
+                        nameInput = it
+                        errorMsg = null
+                    },
+                    label = { Text(if (isRegisterMode) "اسم الطالب ثلاثي أو رباعي (مطلوب) *" else "اسم الطالب ثلاثي أو رباعي") },
+                    placeholder = { Text("مثال: أحمد مصطفى عصام") },
+                    leadingIcon = { Icon(imageVector = Icons.Default.AccountCircle, contentDescription = null) },
+                    modifier = Modifier.fillMaxWidth().testTag("student_name_field"),
+                    singleLine = true,
+                    isError = isNameError
+                )
+                
+                if (isRegisterMode) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = centerInput,
+                        onValueChange = { 
+                            centerInput = it
+                            errorMsg = null
+                        },
+                        label = { Text("مكان الحضور السنتر أو أونلاين (مطلوب) *") },
+                        placeholder = { Text("مثال: سنتر الأوائل أو أونلاين") },
+                        leadingIcon = { Icon(imageVector = Icons.Default.Place, contentDescription = null) },
+                        modifier = Modifier.fillMaxWidth().testTag("student_center_field"),
+                        singleLine = true,
+                        isError = isCenterError
+                    )
+                    
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = parentPhoneInput,
+                        onValueChange = { 
+                            parentPhoneInput = it
+                            errorMsg = null
+                        },
+                        label = { Text("رقم هاتف ولي الأمر (مطلوب) *") },
+                        placeholder = { Text("مثال: 01012345678") },
+                        leadingIcon = { Icon(imageVector = Icons.Default.Phone, contentDescription = null) },
+                        modifier = Modifier.fillMaxWidth().testTag("student_parent_phone_field"),
+                        singleLine = true,
+                        isError = isParentError,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Phone
+                        )
+                    )
+ 
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = studentPhoneInput,
+                        onValueChange = { 
+                            studentPhoneInput = it
+                            errorMsg = null
+                        },
+                        label = { Text("رقم هاتف الطالب نفسه (مطلوب) *") },
+                        placeholder = { Text("مثال: 01011112222") },
+                        leadingIcon = { Icon(imageVector = Icons.Default.Phone, contentDescription = null) },
+                        modifier = Modifier.fillMaxWidth().testTag("student_phone_field"),
+                        singleLine = true,
+                        isError = isStudentError,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Phone
+                        )
+                    )
+                }
+                
+                if (!isRegisterMode) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = codeInput,
+                        onValueChange = { 
+                            codeInput = it
+                            errorMsg = null
+                        },
+                        label = { Text("كود الطالب الشخصي (8 خانات)") },
+                        placeholder = { Text("مثال: STU-ABCDE") },
+                        leadingIcon = { Icon(imageVector = Icons.Default.Key, contentDescription = null) },
+                        modifier = Modifier.fillMaxWidth().testTag("student_code_field"),
+                        singleLine = true,
+                        isError = isCodeError
+                    )
+                } else {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "اختر الصف الدراسي:",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.align(Alignment.Start)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        grades.forEach { grade ->
+                            FilterChip(
+                                selected = selectedGrade == grade,
+                                onClick = { selectedGrade = grade },
+                                label = { Text(grade, fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+                
+                if (errorMsg != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = errorMsg!!,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                
+                Spacer(modifier = Modifier.height(20.dp))
+                
+                Button(
+                    onClick = {
+                        showValidationErrors = true
+                        if (nameInput.isBlank()) {
+                            errorMsg = "الرجاء إدخال اسم الطالب!"
+                            return@Button
+                        }
+                        
+                        if (isRegisterMode) {
+                            val nameParts = nameInput.trim().split("\\s+".toRegex())
+                            if (nameParts.size < 3) {
+                                errorMsg = "الرجاء إدخال اسم الطالب ثلاثي على الأقل!"
+                                return@Button
+                            }
+                            if (centerInput.isBlank()) {
+                                errorMsg = "الرجاء إدخال اسم السنتر أو أونلاين!"
+                                return@Button
+                            }
+                            if (parentPhoneInput.isBlank()) {
+                                errorMsg = "الرجاء إدخال رقم هاتف ولي الأمر!"
+                                return@Button
+                            }
+                            if (parentPhoneInput.length < 11 || !parentPhoneInput.all { it.isDigit() }) {
+                                errorMsg = "الرجاء إدخال رقم هاتف ولي أمر صحيح (11 رقماً)!"
+                                return@Button
+                            }
+                            if (studentPhoneInput.isBlank()) {
+                                errorMsg = "الرجاء إدخال رقم هاتف الطالب الشخصي!"
+                                return@Button
+                            }
+                            if (studentPhoneInput.length < 11 || !studentPhoneInput.all { it.isDigit() }) {
+                                errorMsg = "الرجاء إدخال رقم هاتف طالب صحيح (11 رقماً)!"
+                                return@Button
+                            }
+                        } else {
+                            if (codeInput.isBlank()) {
+                                errorMsg = "الرجاء إدخال الكود الشخصي للطالب!"
+                                return@Button
+                            }
+                        }
+                        
+                        isVerifying = true
+                        if (isRegisterMode) {
+                            val fullNameWithDetails = "${nameInput.trim()} - سنتر: ${centerInput.trim()} - هاتف الطالب: ${studentPhoneInput.trim()} - ولي الأمر: ${parentPhoneInput.trim()}"
+                            viewModel.registerStudent(fullNameWithDetails, selectedGrade) { success, code, err ->
+                                isVerifying = false
+                                if (success && code != null) {
+                                    generatedCodeDialog = code
+                                } else {
+                                    errorMsg = err ?: "فشل تسجيل حساب الطالب الجديد"
+                                }
+                            }
+                        } else {
+                            viewModel.loginStudent(nameInput, codeInput) { success, err ->
+                                isVerifying = false
+                                if (success) {
+                                    onLoginSuccess()
+                                } else {
+                                    errorMsg = err ?: "فشل تسجيل الدخول!"
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("submit_login_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = if (isRegisterMode) EmeraldSuccess else AcademicBlue)
+                ) {
+                    if (isVerifying) {
+                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp))
+                    } else {
+                        Text(
+                            text = if (isRegisterMode) "تأكيد وإنشاء الكود الشخصي" else "دخول الآن للمحاضرات",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(14.dp))
+                
+                TextButton(
+                    onClick = { 
+                        isRegisterMode = !isRegisterMode 
+                        errorMsg = null
+                        showValidationErrors = false
+                    },
+                    modifier = Modifier.testTag("toggle_register_mode")
+                ) {
+                    Text(
+                        text = if (isRegisterMode) "لديك كود بالفعل؟ اضغط هنا لتسجيل الدخول" else "ليس لديك كود؟ انقر هنا للمقرر وإنشاء كود طالب جديد",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        // Quick pass to teacher portal
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text = "هل أنت المعلم المسؤول؟", fontSize = 12.sp, color = Color.White.copy(0.8f))
+            Spacer(modifier = Modifier.width(6.dp))
+            Surface(
+                onClick = {
+                    showTeacherPasswordDialog = true
+                },
+                color = MaterialTheme.colorScheme.primaryContainer,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, AmberGold),
+                modifier = Modifier.testTag("teacher_bypasser")
+            ) {
+                Text(
+                    text = "بوابة المعلم 🏛️",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                )
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(30.dp))
+    }
+    
+    // Dialog displaying generated code to copies
+    if (generatedCodeDialog != null) {
+        Dialog(onDismissRequest = { 
+            generatedCodeDialog = null 
+            onLoginSuccess()
+        }) {
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.padding(14.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = EmeraldSuccess, modifier = Modifier.size(56.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("تم إنشاء حسابك بنجاح! 🎉", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("هذا هو كودك الشخصي المعتمد لتسجيل الدخول لاحقاً:", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline, textAlign = TextAlign.Center)
+                    
+                    Spacer(modifier = Modifier.height(14.dp))
+                    
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = generatedCodeDialog!!,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 24.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(14.dp),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(18.dp))
+                    
+                    Button(
+                        onClick = { 
+                            generatedCodeDialog = null 
+                            onLoginSuccess()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("الدخول للمنصة والمقررات الدراسيّة", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+
+    if (showTeacherPasswordDialog) {
+        TeacherPasswordDialog(
+            onDismiss = { showTeacherPasswordDialog = false },
+            onSuccess = {
+                showTeacherPasswordDialog = false
+                viewModel.loginUserOffline("المعلم حسين حسن", "ADMIN", "معلم المادة")
+                viewModel.setRole(AcademyViewModel.Role.TEACHER)
+                Toast.makeText(context, "تم تسجيل الدخول كـ معلم مسؤول! 🏛️", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+}
+
+fun saveTextFileToDownloads(context: android.content.Context, filename: String, textContent: String) {
+    try {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val contentValues = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+            }
+            val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+            if (uri != null) {
+                resolver.openOutputStream(uri)?.use { outputStream ->
+                    outputStream.write(textContent.toByteArray())
+                }
+                Toast.makeText(context, "تم حفظ الملف بنجاح في مجلد Downloads! 📥", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+            val file = java.io.File(downloadsDir, filename)
+            file.writeText(textContent)
+            Toast.makeText(context, "تم حفظ الملف بنجاح: ${file.absolutePath} 📥", Toast.LENGTH_LONG).show()
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        Toast.makeText(context, "جاري فتح نافذة المشاركة للحفظ... 📂", Toast.LENGTH_SHORT).show()
+    }
+    
+    // Always trigger share intent as second layer / backup
+    try {
+        val sendIntent: android.content.Intent = android.content.Intent().apply {
+            action = android.content.Intent.ACTION_SEND
+            putExtra(android.content.Intent.EXTRA_TEXT, textContent)
+            type = "text/plain"
+        }
+        val shareIntent = android.content.Intent.createChooser(sendIntent, "مشاركة وحفظ قائمة الأكواد 📄")
+        context.startActivity(shareIntent)
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+}
+

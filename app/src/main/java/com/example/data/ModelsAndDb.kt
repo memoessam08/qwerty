@@ -1,12 +1,13 @@
 package com.example.data
 
 import androidx.room.*
+import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.flow.Flow
 
 // 1. Question model helper
+@JsonClass(generateAdapter = true)
 data class Question(
     val id: Int,
     val text: String,
@@ -16,7 +17,7 @@ data class Question(
 
 // 2. Type converter for Room to handle list serialization using moshi
 class QuestionListConverter {
-    private val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+    private val moshi = Moshi.Builder().build()
     private val type = Types.newParameterizedType(List::class.java, Question::class.java)
     private val adapter = moshi.adapter<List<Question>>(type)
 
@@ -43,6 +44,7 @@ class QuestionListConverter {
 
 // 3. Lesson Entity (الحصة الدراسية)
 @Entity(tableName = "lessons")
+@JsonClass(generateAdapter = true)
 data class Lesson(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val title: String,               // عنوان الدرس
@@ -62,6 +64,7 @@ data class Lesson(
 
 // 3.1 StudentProfile Entity (ملفات الطلاب)
 @Entity(tableName = "students")
+@JsonClass(generateAdapter = true)
 data class StudentProfile(
     @PrimaryKey val id: String, // الكود الشخصي للطالب (مثلا STU-XXXXX)
     val name: String,
@@ -71,6 +74,7 @@ data class StudentProfile(
 
 // 3.2 ActivationCode Entity (أكواد تفعيل الحصص المنتجة)
 @Entity(tableName = "activation_codes")
+@JsonClass(generateAdapter = true)
 data class ActivationCode(
     @PrimaryKey val code: String, // كود التفعيل المولد
     val lessonId: Int? = null,    // معرف الدرس المرتبط به (إن وجد)
@@ -81,6 +85,7 @@ data class ActivationCode(
 
 // 4. Exam Entity (الامتحانات والاختبارات)
 @Entity(tableName = "exams")
+@JsonClass(generateAdapter = true)
 data class Exam(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val title: String,               // عنوان الامتحان
@@ -94,6 +99,7 @@ data class Exam(
 
 // 5. QuizSubmission Entity (درجات ومتابعة الطلاب)
 @Entity(tableName = "quiz_submissions")
+@JsonClass(generateAdapter = true)
 data class QuizSubmission(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val examId: Int,                 // رقم الامتحان

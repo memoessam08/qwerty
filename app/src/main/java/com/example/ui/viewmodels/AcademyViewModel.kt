@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.*
+import com.squareup.moshi.JsonClass
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -42,6 +43,12 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
     private val _activeExam = MutableStateFlow<Exam?>(null)
     val activeExam: StateFlow<Exam?> = _activeExam.asStateFlow()
 
+    private val _notifications = MutableStateFlow<List<SmartNotification>>(emptyList())
+    val notifications: StateFlow<List<SmartNotification>> = _notifications.asStateFlow()
+
+    private val _aiReportState = MutableStateFlow<AIState>(AIState.Idle)
+    val aiReportState: StateFlow<AIState> = _aiReportState.asStateFlow()
+
     enum class Role { STUDENT, TEACHER }
 
     private fun generateRandomStudentCode(): String {
@@ -61,6 +68,31 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
         _studentName.value = prefs.getString("student_name", "") ?: ""
         _selectedGrade.value = prefs.getString("selected_grade", "الصف الثالث الثانوي") ?: "الصف الثالث الثانوي"
         _studentCode.value = prefs.getString("student_code", "") ?: ""
+
+        val saved = loadNotificationsFromPrefs()
+        if (saved.isEmpty()) {
+            val initial = listOf(
+                SmartNotification(
+                    title = "مرحباً بك في المنصة التعليمية! 👋",
+                    message = "البروفيسور يرحب بك في منصة الأستاذ حسين حسن التعليمية لمادة التاريخ. تصفح الحصص والامتحانات الآن!",
+                    type = "ALERT"
+                ),
+                SmartNotification(
+                    title = "مراجعة هامة: الفصل الأول في التاريخ",
+                    message = "ينصح بمذاكرة الحملة الفرنسية على مصر والشام واكتشاف أثرها، ثم خوض اختباراتها.",
+                    type = "TIPS"
+                ),
+                SmartNotification(
+                    title = "تنبيه اختبار جديد 📝",
+                    message = "تم نشر اختبار الأسبوع التقييمي لمستوى التاريخ القديم، اختبر قدراتك وحقق أعلى الدرجات!",
+                    type = "EXAM"
+                )
+            )
+            _notifications.value = initial
+            saveNotificationsToPrefs(initial)
+        } else {
+            _notifications.value = saved
+        }
 
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             allLessons.first().let { lessons ->
@@ -223,6 +255,11 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
                     e.printStackTrace()
                 }
             }
+            addNotification(
+                title = "تم نشر درس جديد: ${finalLesson.title} 📚",
+                message = "الحصة مخصصة لـ ${finalLesson.gradeLevel}، مدتها ${finalLesson.durationMinutes} دقيقة. تصفحها الآن!",
+                type = "LESSON"
+            )
         }
     }
 
@@ -275,6 +312,11 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
                     e.printStackTrace()
                 }
             }
+            addNotification(
+                title = "تم نشر اختبار جديد بقيمة ${finalExam.totalScore} درجة! 📝",
+                message = "الاختبار: ${finalExam.title} (${finalExam.gradeLevel}). جاهز للتقديم وقياس قدراتك.",
+                type = "EXAM"
+            )
         }
     }
 
@@ -719,6 +761,145 @@ class AcademyViewModel(application: Application) : AndroidViewModel(application)
             }
         }
     }
+
+    // --- Smart Notification & AI Support Implementations ---
+
+    fun postLocalNotification(title: String, message: String) {
+        val context = getApplication<Application>()
+        val notificationManager = context.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val channelId = "academy_channel"
+            val channelName = "تنبيهات المنصة التعليمية"
+            val importance = android.app.NotificationManager.IMPORTANCE_DEFAULT
+            val channel = android.app.NotificationChannel(channelId, channelName, importance).apply {
+                description = "قناة إشعارات منصة الأستاذ حسين حسن التعليمية"
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+        
+        val builder = androidx.core.app.NotificationCompat.Builder(context, "academy_channel")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            
+        try {
+            notificationManager.notify((System.currentTimeMillis() % 100000).toInt(), builder.build())
+        } catch (e: java.lang.SecurityException) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun saveNotificationsToPrefs(list: List<SmartNotification>) {
+        val prefs = getApplication<Application>().getSharedPreferences("academy_notifications", android.content.Context.MODE_PRIVATE)
+        val moshi = com.squareup.moshi.Moshi.Builder().build()
+        val type = com.squareup.moshi.Types.newParameterizedType(List::class.java, SmartNotification::class.java)
+        val adapter = moshi.adapter<List<SmartNotification>>(type)
+        val json = try { adapter.toJson(list) } catch(e: Exception) { "[]" }
+        prefs.edit().putString("list", json).apply()
+    }
+
+    private fun loadNotificationsFromPrefs(): List<SmartNotification> {
+        val prefs = getApplication<Application>().getSharedPreferences("academy_notifications", android.content.Context.MODE_PRIVATE)
+        val json = prefs.getString("list", null) ?: return emptyList()
+        val moshi = com.squareup.moshi.Moshi.Builder().build()
+        val type = com.squareup.moshi.Types.newParameterizedType(List::class.java, SmartNotification::class.java)
+        val adapter = moshi.adapter<List<SmartNotification>>(type)
+        return try { adapter.fromJson(json) ?: emptyList() } catch(e: Exception) { emptyList() }
+    }
+
+    fun addNotification(title: String, message: String, type: String) {
+        val newNotif = SmartNotification(title = title, message = message, type = type)
+        val updated = listOf(newNotif) + _notifications.value
+        _notifications.value = updated
+        saveNotificationsToPrefs(updated)
+        postLocalNotification(title, message)
+    }
+
+    fun clearNotifications() {
+        _notifications.value = emptyList()
+        saveNotificationsToPrefs(emptyList())
+    }
+
+    fun generateAIStudentAnalysis() {
+        val apiKey = com.example.BuildConfig.GEMINI_API_KEY
+        if (apiKey == "MY_GEMINI_API_KEY" || apiKey.isBlank()) {
+            _aiReportState.value = AIState.Error("عذراً، لم يتم العثور على مفتاح تفعيل الذكاء الاصطناعي (GEMINI_API_KEY) في إعدادات التطبيق. يرجى تكوين المفتاح عبر لوحة Secrets للاستفادة من الميزة.")
+            return
+        }
+        
+        _aiReportState.value = AIState.Loading
+        viewModelScope.launch {
+            try {
+                val name = _studentName.value.ifBlank { "طالب متميز" }
+                val grade = _selectedGrade.value
+                val lessons = repository.allLessons.first()
+                val submissions = repository.allSubmissions.first()
+                
+                val completedLessons = lessons.filter { it.isCompleted }.joinToString(", ") { it.title }
+                val incompleteLessons = lessons.filter { !it.isCompleted }.joinToString(", ") { "${it.title} (وقت المشاهدة المكتمل: ${it.watchTimeSeconds} ثانية)" }
+                val examPerformance = submissions.joinToString(", ") { "${it.examTitle}: الدرجة ${it.score} من ${it.totalScore} (النسبة: ${(it.score.toDouble() / it.totalScore * 100).toInt()}%)" }
+                
+                val prompt = """
+                    الطالب: $name
+                    السنة الدراسية: $grade
+                    عدد الحصص المكتملة لديه: ${lessons.count { it.isCompleted }} حصة
+                    الحصص التي تم الانتهاء منها بالكامل: $completedLessons
+                    الحصص التي لم ينتهِ منها بعد وزمن المشاهدة: $incompleteLessons
+                    نتائج الاختبارات والتقييمات الأخيرة: $examPerformance
+                    
+                    بصفتك "البروفيسور"، المستشار الأكاديمي الذكي لمنصة التاريخ الخاصة بالأستاذ حسين حسن، حلل مستوى هذا الطالب بدقة وعمق.
+                    يجب أن تتألف إجابتك من الأقسام التالية مع الاستعانة برموز تعبيرية تاريخية تليق بالمنصة:
+                    1. التقييم العام لأداء الطالب بمستوى مشجع.
+                    2. أهم نقاط القوة لديه اعتماداً على الحصص التي أكملها أو الاختبارات ذات الدرجات المرتفعة.
+                    3. نقاط الضعف والموضوعات التاريخية التي تتطلب تركيزاً أكبر ومراجعة دقيقة (المبنية على الاختبارات ذات النتائج الأقل أو الحصص غير المكتملة).
+                    4. خطة مراجعة مخصصة وموجهة تقترح عليه دراسة حصص معينة أو مراجعة فصول بعينها مع ذكر نصائح استذكار عملية للتاريخ.
+                    
+                    اكتب التقرير بالكامل باللغة العربية بأسلوب راقٍ، ملهم، وملم بالمصطلحات التاريخية.
+                """.trimIndent()
+                
+                val request = GeminiRequest(
+                    contents = listOf(GeminiContent(parts = listOf(GeminiPart(text = prompt))))
+                )
+                
+                val response = GeminiClient.apiService.generateContent(apiKey, request)
+                val text = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                
+                if (text != null) {
+                    _aiReportState.value = AIState.Success(text)
+                    addNotification(
+                        title = "تم إصدار تحليل البروفيسور الذكي 🎓",
+                        message = "تم تحليل مستواك واقتراح مراجعة مخصصة ومكثفة لضمان تفوقك في مادة التاريخ.",
+                        type = "AI"
+                    )
+                } else {
+                    _aiReportState.value = AIState.Error("لم نتلق استجابة صحيحة من نظام الذكاء الاصطناعي، يرجى المحاولة لاحقاً.")
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _aiReportState.value = AIState.Error("حدث خطأ أثناء إجراء التحليل: ${e.message ?: "يرجى التحقق من اتصال الإنترنت."}")
+            }
+        }
+    }
+}
+
+@JsonClass(generateAdapter = true)
+data class SmartNotification(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val title: String,
+    val message: String,
+    val type: String, // "LESSON", "EXAM", "TIPS", "AI", "ALERT"
+    val timestamp: Long = System.currentTimeMillis(),
+    val isRead: Boolean = false
+)
+
+sealed class AIState {
+    object Idle : AIState()
+    object Loading : AIState()
+    data class Success(val report: String) : AIState()
+    data class Error(val message: String) : AIState()
 }
 
 class AcademyViewModelFactory(private val application: Application) : ViewModelProvider.Factory {

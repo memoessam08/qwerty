@@ -1,7 +1,6 @@
 package com.example.data
 
 import com.squareup.moshi.Moshi
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -64,7 +63,6 @@ object RetrofitClient {
     private const val SUPABASE_KEY = "sb_publishable_NknDg83Ggiq9_7x9qiv9tQ_4RSlVxzw"
 
     private val moshi = Moshi.Builder()
-        .addLast(KotlinJsonAdapterFactory())
         .build()
 
     private val logging = HttpLoggingInterceptor().apply {

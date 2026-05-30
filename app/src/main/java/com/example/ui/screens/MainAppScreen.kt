@@ -33,6 +33,8 @@ import com.example.data.*
 import com.example.ui.theme.*
 import com.example.ui.viewmodels.AcademyViewModel
 import com.example.ui.viewmodels.AcademyViewModelFactory
+import com.example.ui.viewmodels.SmartNotification
+import com.example.ui.viewmodels.AIState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -57,8 +59,12 @@ fun MainAppScreen() {
     val students by viewModel.allStudentsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val activeExam by viewModel.activeExam.collectAsStateWithLifecycle()
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
+    val notifications by viewModel.notifications.collectAsStateWithLifecycle()
+    val aiState by viewModel.aiReportState.collectAsStateWithLifecycle()
 
     // Screen State
+    var showNotificationsDialog by remember { mutableStateOf(false) }
+    var showAiAdvisorDialog by remember { mutableStateOf(false) }
     var currentStudentTab by remember { mutableStateOf("LESSONS") } // LESSONS, EXAMS, PROGRESS, BOARD
     var currentTeacherTab by remember { mutableStateOf("T_STATS") } // T_STATS, T_ADD_LESSON, T_ADD_EXAM, T_SUBMISSIONS
 
@@ -131,6 +137,65 @@ fun MainAppScreen() {
                                     )
                                 },
                                 actions = {
+                                    // AI Advisor Button
+                                    if (currentRole == AcademyViewModel.Role.STUDENT) {
+                                        IconButton(
+                                            onClick = { showAiAdvisorDialog = true },
+                                            modifier = Modifier.padding(end = 4.dp).testTag("ai_advisor_button")
+                                        ) {
+                                            BadgedBox(
+                                                badge = {
+                                                    Badge(
+                                                        containerColor = AmberGold,
+                                                        contentColor = Color.Black
+                                                    ) {
+                                                        Text("AI", fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                                    }
+                                                }
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Star,
+                                                    contentDescription = "البروفيسور الذكي",
+                                                    tint = AmberGold,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Notifications Button with badge
+                                    IconButton(
+                                        onClick = { showNotificationsDialog = true },
+                                        modifier = Modifier.padding(end = 4.dp).testTag("notifications_button")
+                                    ) {
+                                        if (notifications.isNotEmpty()) {
+                                            BadgedBox(
+                                                badge = {
+                                                    Badge(
+                                                        containerColor = Color.Red,
+                                                        contentColor = Color.White
+                                                    ) {
+                                                        Text("${notifications.size}", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                    }
+                                                }
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Notifications,
+                                                    contentDescription = "الإشعارات",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Default.Notifications,
+                                                contentDescription = "الإشعارات",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+                                    }
+
                                     // Professional quick Profile click handler
                                     Surface(
                                         onClick = { showProfileDialog = true },
@@ -231,7 +296,8 @@ fun MainAppScreen() {
                                         lessons = lessons,
                                         submissions = submissions,
                                         selectedGrade = selectedGrade,
-                                        onCustomizeProfile = { showProfileDialog = true }
+                                        onCustomizeProfile = { showProfileDialog = true },
+                                        onShowAiAdvisor = { showAiAdvisorDialog = true }
                                     )
                                     "BOARD" -> StudentLeaderboardTab(submissions = submissions)
                                 }
@@ -368,6 +434,22 @@ fun MainAppScreen() {
                     viewModel.setRole(AcademyViewModel.Role.TEACHER)
                     Toast.makeText(context, "العرض بصفة: معلم متحكم", Toast.LENGTH_SHORT).show()
                 }
+            )
+        }
+
+        if (showNotificationsDialog) {
+            SmartNotificationsDialog(
+                notifications = notifications,
+                onDismiss = { showNotificationsDialog = false },
+                onClear = { viewModel.clearNotifications() }
+            )
+        }
+
+        if (showAiAdvisorDialog) {
+            SmartAiAdvisorDialog(
+                aiState = aiState,
+                onGenerate = { viewModel.generateAIStudentAnalysis() },
+                onDismiss = { showAiAdvisorDialog = false }
             )
         }
     }
@@ -1016,7 +1098,8 @@ fun StudentProgressTab(
     lessons: List<Lesson>,
     submissions: List<QuizSubmission>,
     selectedGrade: String,
-    onCustomizeProfile: () -> Unit
+    onCustomizeProfile: () -> Unit,
+    onShowAiAdvisor: () -> Unit
 ) {
     val gradeLessons = lessons.filter { it.gradeLevel == selectedGrade }
     val completedLessonsCount = gradeLessons.count { it.isCompleted }
@@ -1119,6 +1202,53 @@ fun StudentProgressTab(
                         Text("معدل التفوق", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
                         Text("${String.format("%.1f", averageScorePercent)}%", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AcademicBlue)
                     }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Premium AI Advisor integration card
+        Card(
+            modifier = Modifier.fillMaxWidth().clickable { onShowAiAdvisor() }.testTag("ai_advisor_card"),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+            ),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Star,
+                        contentDescription = "البروفيسور",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "المستشار الأكاديمي الذكي (البروفيسور) 🎓✨",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "اضغط لتحليل تقدم دراستك للتاريخ فورا واقتراح خطة مراجعات ومقترحات ذكية لتقوية مستواك باستخدام الذكاء الاصطناعي.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 15.sp
+                    )
                 }
             }
         }
@@ -4609,5 +4739,338 @@ fun saveTextFileToDownloads(context: android.content.Context, filename: String, 
     } catch (e: Exception) {
         e.printStackTrace()
     }
+}
+
+@Composable
+fun SmartNotificationsDialog(
+    notifications: List<SmartNotification>,
+    onDismiss: () -> Unit,
+    onClear: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("إغلاق", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            if (notifications.isNotEmpty()) {
+                TextButton(onClick = onClear) {
+                    Text("مسح الكل 🗑️", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Notifications,
+                    contentDescription = "Notifications",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp)
+                )
+                Text(
+                    text = "مركز الإشعارات الذكية",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            }
+        },
+        text = {
+            if (notifications.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.Notifications,
+                            contentDescription = "Empty",
+                            modifier = Modifier.size(48.dp),
+                            tint = MaterialTheme.colorScheme.outline
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "لا توجد إشعارات جديدة حالياً",
+                            color = MaterialTheme.colorScheme.outline,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(notifications) { notif ->
+                        val icon = when (notif.type) {
+                            "LESSON" -> Icons.Default.PlayArrow
+                            "EXAM" -> Icons.Default.Assignment
+                            "TIPS" -> Icons.Default.Star
+                            "AI" -> Icons.Default.Star
+                            else -> Icons.Default.Info
+                        }
+                        val tint = when (notif.type) {
+                            "LESSON" -> MaterialTheme.colorScheme.primary
+                            "EXAM" -> MaterialTheme.colorScheme.secondary
+                            "TIPS" -> AmberGold
+                            "AI" -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.outline
+                        }
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .background(tint.copy(alpha = 0.15f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = icon,
+                                        contentDescription = notif.type,
+                                        tint = tint,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = notif.title,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = notif.message,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+@Composable
+fun SmartAiAdvisorDialog(
+    aiState: AIState,
+    onGenerate: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("إغلاق", fontWeight = FontWeight.Bold)
+            }
+        },
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Star,
+                    contentDescription = "AI Professor",
+                    tint = AmberGold,
+                    modifier = Modifier.size(28.dp)
+                )
+                Text(
+                    text = "البروفيسور - مستشار التاريخ الذكي",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 450.dp)
+            ) {
+                when (aiState) {
+                    is AIState.Idle -> {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(vertical = 16.dp)
+                        ) {
+                            Text(
+                                text = "مرحباً بك في وحدة الإرشاد الأكاديمي المتقدمة بالذكاء الاصطناعي! 🎓✨",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 15.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "يقوم البروفيسور بتحليل تلقائي لهيستوجرام أداؤك في الاختبارات السابقة ونسب تقدمك في الحصص الأسبوعية وعدد المرات التي أتممت فيها المذاكرة، ومن ثم يقوم بصياغة تقرير شامل لتوجيهك نحو التفوق والدرجة النهائية.",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                lineHeight = 18.sp
+                            )
+                            Spacer(modifier = Modifier.height(24.dp))
+                            Button(
+                                onClick = onGenerate,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Star,
+                                        contentDescription = "Compute",
+                                        tint = Color.White
+                                    )
+                                    Text("توليد تقرير وتحليلات مستواي الآن 🚀", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                    is AIState.Loading -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier.padding(16.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(54.dp)
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "جاري الاتصال بقاعدة معارف البروفيسور...",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "يقوم البروفيسور بتحليل سجل مشاهداتك ونتائج اختبارات التاريخ بدقة عالية... 🏛️⏳",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.outline,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                    is AIState.Success -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                        ) {
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                            ) {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    item {
+                                        Text(
+                                            text = aiState.report,
+                                            fontSize = 13.sp,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            lineHeight = 20.sp
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = onGenerate,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.Refresh, contentDescription = "Retry")
+                                    Text("تحديث التقرير وتحليل درجات جديدة 🔄", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                    is AIState.Error -> {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = "Error",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "فشل توليد التقرير",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.error,
+                                fontSize = 15.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = aiState.message,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                lineHeight = 16.sp
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(
+                                onClick = onGenerate,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("إعادة المحاولة 🔄", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
 }
 
